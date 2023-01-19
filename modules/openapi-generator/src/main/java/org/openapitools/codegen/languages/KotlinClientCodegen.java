@@ -20,11 +20,13 @@ package org.openapitools.codegen.languages;
 import java.io.File;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import io.swagger.v3.oas.models.media.Schema;
 import org.apache.commons.lang3.StringUtils;
 import org.openapitools.codegen.CliOption;
 import org.openapitools.codegen.CodegenConstants;
@@ -75,6 +77,7 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
     public static final String OMIT_GRADLE_PLUGIN_VERSIONS = "omitGradlePluginVersions";
     public static final String OMIT_GRADLE_WRAPPER = "omitGradleWrapper";
     public static final String IDEA = "idea";
+    public static final String AIDL = "aidl";
 
     public static final String DATE_LIBRARY = "dateLibrary";
     public static final String REQUEST_DATE_CONVERTER = "requestDateConverter";
@@ -97,6 +100,8 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
     // (mustache does not allow for boolean operators so we need this extra field)
     protected boolean doNotUseRxAndCoroutines = true;
     protected boolean generateRoomModels = false;
+
+    protected boolean generateAidlModels = false;
     protected String roomModelPackage = "";
 
 
@@ -181,6 +186,7 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
 
         outputFolder = "generated-code" + File.separator + "kotlin-client";
         modelTemplateFiles.put("model.mustache", ".kt");
+        modelTemplateFiles.put("aidl.mustache", ".aidl");
         if (generateRoomModels) {
             modelTemplateFiles.put("model_room.mustache", ".kt");
         }
@@ -239,12 +245,20 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
         cliOptions.add(CliOption.newBoolean(OMIT_GRADLE_PLUGIN_VERSIONS, "Whether to declare Gradle plugin versions in build files."));
         cliOptions.add(CliOption.newBoolean(OMIT_GRADLE_WRAPPER, "Whether to omit Gradle wrapper for creating a sub project."));
         cliOptions.add(CliOption.newBoolean(IDEA, "Add IntellJ Idea plugin and mark Kotlin main and test folders as source folders."));
+        cliOptions.add(CliOption.newBoolean(AIDL, "Generate aidl models."));
 
         cliOptions.add(CliOption.newBoolean(MOSHI_CODE_GEN, "Whether to enable codegen with the Moshi library. Refer to the [official Moshi doc](https://github.com/square/moshi#codegen) for more info."));
 
         cliOptions.add(CliOption.newBoolean(GENERATE_ROOM_MODELS, "Generate Android Room database models in addition to API models (JVM Volley library only)", false));
 
         cliOptions.add(CliOption.newBoolean(SUPPORT_ANDROID_API_LEVEL_25_AND_BELLOW, "[WARNING] This flag will generate code that has a known security vulnerability. It uses `kotlin.io.createTempFile` instead of `java.nio.file.Files.createTempFile` in order to support Android API level 25 and bellow. For more info, please check the following links https://github.com/OpenAPITools/openapi-generator/security/advisories/GHSA-23x4-m842-fmwf, https://github.com/OpenAPITools/openapi-generator/pull/9284"));
+    }
+
+    @Override
+    public CodegenProperty fromProperty(String name, Schema p, boolean required, boolean schemaIsFromAdditionalProperties) {
+        CodegenProperty property = super.fromProperty(name, p, required, schemaIsFromAdditionalProperties);
+        property.nameInLowerCase = property.nameInSnakeCase.toLowerCase(Locale.ROOT);
+        return property;
     }
 
     public CodegenType getTag() {
@@ -266,6 +280,11 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
     public void setGenerateRoomModels(Boolean generateRoomModels) {
         this.generateRoomModels = generateRoomModels;
     }
+
+    private void setGenerateAidlModels(boolean generateAidlModels) {
+        this.generateAidlModels = generateAidlModels;
+    }
+
 
     public void setUseRxJava(boolean useRxJava) {
         if (useRxJava) {
@@ -339,7 +358,9 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
         String suffix = modelTemplateFiles().get(templateName);
         // If this was a proper template method, i wouldn't have to make myself throw up by doing this....
         if (getGenerateRoomModels() && suffix.startsWith("RoomModel")) {
-            return roomModelFileFolder() + File.separator + toModelFilename(modelName) + suffix;
+            return roomModelFileFolder() + File.separator + toModelFilename(modelName) + "Entity.kt";
+        } else if (generateAidlModels && suffix.startsWith(".aidl")) {
+            return aidlFileFolder() + File.separator + toModelFilename(modelName) + suffix;
         } else {
             return modelFileFolder() + File.separator + toModelFilename(modelName) + suffix;
         }
@@ -347,6 +368,13 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
 
     public String roomModelFileFolder() {
         return outputFolder + File.separator + sourceFolder + File.separator + roomModelPackage.replace('.', File.separatorChar);
+    }
+
+    public String aidlFileFolder() {
+        final String aidlFolder = sourceFolder.substring(0, sourceFolder.lastIndexOf('/')) + File.separator + "aidl";
+        final String folder = modelFileFolder().replace(sourceFolder, aidlFolder);
+        LOGGER.info("Aidl folder: " + folder);
+        return folder;
     }
 
     @Override
@@ -367,6 +395,11 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
         }
 
         super.processOpts();
+
+        if (additionalProperties.containsKey(AIDL)) {
+            setGenerateAidlModels(Boolean.parseBoolean(additionalProperties.get(AIDL).toString()));
+            generateAidlModels();
+        }
 
         boolean hasRx = additionalProperties.containsKey(USE_RX_JAVA);
         boolean hasRx2 = additionalProperties.containsKey(USE_RX_JAVA2);
@@ -452,6 +485,7 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
 
         processDateLibrary();
         processRequestDateConverter();
+        processRoom(infrastructureFolder);
 
         if (additionalProperties.containsKey(COLLECTION_TYPE)) {
             setCollectionType(additionalProperties.get(COLLECTION_TYPE).toString());
@@ -488,6 +522,12 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
             if (ProcessUtils.hasHttpBasicMethods(openAPI)) {
                 supportingFiles.add(new SupportingFile("auth/HttpBasicAuth.kt.mustache", authFolder, "HttpBasicAuth.kt"));
             }
+        }
+    }
+
+    private void generateAidlModels() {
+        if (generateAidlModels) {
+            supportingFiles.add(new SupportingFile("aidl.mustache", aidlFileFolder(), ".aidl"));
         }
     }
 
@@ -563,26 +603,6 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
         additionalProperties.put(JVM, true);
         additionalProperties.put(JVM_VOLLEY, true);
 
-        if (additionalProperties.containsKey(GENERATE_ROOM_MODELS)) {
-            this.setGenerateRoomModels(convertPropertyToBooleanAndWriteBack(GENERATE_ROOM_MODELS));
-            // Hide this option behind a property getter and setter in case we need to check it elsewhere
-            if (getGenerateRoomModels()) {
-                modelTemplateFiles.put("model_room.mustache", "RoomModel.kt");
-                supportingFiles.add(new SupportingFile("infrastructure/ITransformForStorage.mustache", infrastructureFolder, "ITransformForStorage.kt"));
-
-            }
-        } else {
-            additionalProperties.put(GENERATE_ROOM_MODELS, generateRoomModels);
-        }
-
-        if (additionalProperties.containsKey(CodegenConstants.PACKAGE_NAME)) {
-            if (!additionalProperties.containsKey(ROOM_MODEL_PACKAGE))
-                this.setRoomModelPackage(packageName + ".models.room");
-            else
-                this.setRoomModelPackage(additionalProperties.get(ROOM_MODEL_PACKAGE).toString());
-        }
-        additionalProperties.put(ROOM_MODEL_PACKAGE, roomModelPackage);
-
         supportingFiles.add(new SupportingFile("infrastructure/CollectionFormats.kt.mustache", infrastructureFolder, "CollectionFormats.kt"));
 
         // We have auth related partial files, so they can be overridden, but don't generate them explicitly
@@ -597,6 +617,26 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
         addSupportingSerializerAdapters(infrastructureFolder);
         supportingFiles.remove(new SupportingFile("jvm-common/infrastructure/Serializer.kt.mustache", infrastructureFolder, "Serializer.kt"));
 
+    }
+
+    private void processRoom(String infrastructureFolder) {
+        if (additionalProperties.containsKey(GENERATE_ROOM_MODELS)) {
+            this.setGenerateRoomModels(convertPropertyToBooleanAndWriteBack(GENERATE_ROOM_MODELS));
+            // Hide this option behind a property getter and setter in case we need to check it elsewhere
+            if (getGenerateRoomModels()) {
+                modelTemplateFiles.put("model_room.mustache", "RoomModel.kt");
+            }
+        } else {
+            additionalProperties.put(GENERATE_ROOM_MODELS, generateRoomModels);
+        }
+
+        if (additionalProperties.containsKey(CodegenConstants.PACKAGE_NAME)) {
+            if (!additionalProperties.containsKey(ROOM_MODEL_PACKAGE))
+                this.setRoomModelPackage(packageName + ".models.room");
+            else
+                this.setRoomModelPackage(additionalProperties.get(ROOM_MODEL_PACKAGE).toString());
+        }
+        additionalProperties.put(ROOM_MODEL_PACKAGE, roomModelPackage);
     }
 
     private void addSupportingSerializerAdapters(final String infrastructureFolder) {
@@ -797,9 +837,6 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
 
         for (ModelMap mo : objects.getModels()) {
             CodegenModel cm = mo.getModel();
-            if (getGenerateRoomModels()) {
-                cm.vendorExtensions.put("x-has-data-class-body", true);
-            }
 
             // escape the variable base name for use as a string literal
             List<CodegenProperty> vars = Stream.of(
@@ -848,22 +885,22 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
                         // match on first part in mediaTypes like 'application/json; charset=utf-8'
                         int endIndex = mediaTypeValue.indexOf(';');
                         String mediaType = (endIndex == -1
-                            ? mediaTypeValue
-                            : mediaTypeValue.substring(0, endIndex)
+                                ? mediaTypeValue
+                                : mediaTypeValue.substring(0, endIndex)
                         ).trim();
                         return "multipart/form-data".equals(mediaType)
-                            || "application/x-www-form-urlencoded".equals(mediaType)
-                            || (mediaType.startsWith("application/") && mediaType.endsWith("json"));
+                                || "application/x-www-form-urlencoded".equals(mediaType)
+                                || (mediaType.startsWith("application/") && mediaType.endsWith("json"));
                     };
                     operation.consumes = operation.consumes == null ? null : operation.consumes.stream()
-                        .filter(isSerializable)
-                        .limit(1)
-                        .collect(Collectors.toList());
+                            .filter(isSerializable)
+                            .limit(1)
+                            .collect(Collectors.toList());
                     operation.hasConsumes = operation.consumes != null && !operation.consumes.isEmpty();
 
                     operation.produces = operation.produces == null ? null : operation.produces.stream()
-                        .filter(isSerializable)
-                        .collect(Collectors.toList());
+                            .filter(isSerializable)
+                            .collect(Collectors.toList());
                     operation.hasProduces = operation.produces != null && !operation.produces.isEmpty();
                 }
 
