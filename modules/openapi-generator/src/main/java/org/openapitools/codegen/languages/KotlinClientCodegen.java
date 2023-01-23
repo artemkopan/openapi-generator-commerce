@@ -186,9 +186,11 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
 
         outputFolder = "generated-code" + File.separator + "kotlin-client";
         modelTemplateFiles.put("model.mustache", ".kt");
-        modelTemplateFiles.put("aidl.mustache", ".aidl");
         if (generateRoomModels) {
             modelTemplateFiles.put("model_room.mustache", ".kt");
+        }
+        if (generateAidlModels) {
+            modelTemplateFiles.put("aidl.mustache", ".aidl");
         }
         apiTemplateFiles.put("api.mustache", ".kt");
         modelDocTemplateFiles.put("model_doc.mustache", ".md");
@@ -397,7 +399,7 @@ public class KotlinClientCodegen extends AbstractKotlinCodegen {
         super.processOpts();
 
         if (additionalProperties.containsKey(AIDL)) {
-            setGenerateAidlModels(Boolean.parseBoolean(additionalProperties.get(AIDL).toString()));
+            setGenerateAidlModels(convertPropertyToBooleanAndWriteBack(AIDL));
             generateAidlModels();
         }
 
